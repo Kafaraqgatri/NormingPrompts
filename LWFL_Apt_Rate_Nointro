@@ -1,0 +1,75 @@
+import os
+import time
+import pandas as pd
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --------------------------------------------------------------------------
+# 0.  Config & client
+# --------------------------------------------------------------------------
+load_dotenv(r"C:\Users\Cagi\API.env")  # .env must define OPENAI_API_KEY
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+MODEL_NAME = "gpt-4o"
+
+# --------------------------------------------------------------------------
+# 1.  Prompt templates (no intro)
+# --------------------------------------------------------------------------
+SYSTEM_MSG = (
+    "You are an adult English speaker rating metaphors.\n"
+    "Return ONLY a single integer from 1 to 5 (no words, no punctuation)."
+)
+
+USER_TEMPLATE = (
+    "Metaphor: \"{met}\"\n\n"
+    "Rate how APT the metaphor is at conveying the concept, where "
+    "1 = not apt at all and 5 = extremely apt.\n\n"
+    "Number only:"
+)
+
+def make_user_msg(metaphor: str) -> str:
+    return USER_TEMPLATE.format(met=metaphor)
+
+# --------------------------------------------------------------------------
+# 2.  Helper: get integer rating
+# --------------------------------------------------------------------------
+def rate_aptness(metaphor: str, retries: int = 3) -> int | None:
+    for _ in range(retries):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL_NAME,
+                temperature=0,
+                max_tokens=1,
+                messages=[
+                    {"role": "system", "content": SYSTEM_MSG},
+                    {"role": "user",   "content": make_user_msg(metaphor)},
+                ],
+            )
+            rating = int(resp.choices[0].message.content.strip())
+            if 1 <= rating <= 5:
+                return rating
+        except Exception as e:
+            print("⚠️ retrying after error:", e)
+            time.sleep(1)
+    return None
+
+# --------------------------------------------------------------------------
+# 3.  Load Excel sheet & collect ratings (MET only)
+# --------------------------------------------------------------------------
+excel_path = r"C:\Users\Cagi\Desktop\LWfl\Stimuli\Pavia Learning Study - WordList.xlsx"
+df = pd.read_excel(excel_path, sheet_name="GPT", usecols=["MET"])
+
+ratings = []
+for idx, row in df.iterrows():
+    met = row["MET"]
+    r = rate_aptness(met)
+    ratings.append(r)
+    print(f"{idx+1:3d}. {met[:50]:50s} → {r}")
+    time.sleep(0.3)
+
+# --------------------------------------------------------------------------
+# 4.  Save results
+# --------------------------------------------------------------------------
+df["RATING"] = ratings
+out_path = r"C:\Users\Cagi\Desktop\LWfl\Stimuli\Pavia Learning Study - WordList_rated_no_intro.xlsx"
+df.to_excel(out_path, index=False)
+print(f"\nDone! Ratings saved to:\n  {out_path}")
