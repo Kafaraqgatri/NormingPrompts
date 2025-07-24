@@ -1,0 +1,108 @@
+import os
+import time
+import re
+import statistics
+import pandas as pd
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# --------------------------------------------------------------------------
+# 0.  Config & client
+# --------------------------------------------------------------------------
+load_dotenv(r"C:\Users\Cagi\API.env")
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+MODEL_NAME = "gpt-4o"
+
+# --------------------------------------------------------------------------
+# 1.  Iteration setting
+# --------------------------------------------------------------------------
+N_ITER = 10   # number of times to sample each metaphor
+
+# --------------------------------------------------------------------------
+# 2.  Prompt templates (Prompt 2: “Function-focused biology aptness”)
+
+# --------------------------------------------------------------------------
+SYSTEM_MSG = (
+    "You are an expert rater of biology-learning metaphors for ESL students.\n"
+    "Aptness = the degree to which the metaphor captures the biological\n"
+    "function or mechanism of the concept.\n\n"
+    "Use a 7-point scale:\n"
+    "  7 = very apt, captures important functions, no confusion\n"
+    "  4 = moderately apt – points the reader toward the right role but leaves\n"
+    "      important mechanistic detail vague or partially misleading.\n"
+    "  1 = not apt, inept, confusing or superficial, shares almost no comparable functions\n"
+    
+    "Return exactly:\n"
+    "Rating: <1-7>\n"
+    "Reason: <one concise sentence>"
+)
+
+USER_TEMPLATE = (
+    "Background function: \"{intro}\"\n"
+    "Metaphor: \"{met}\"\n\n"
+    "Number only, then one-sentence justification:"
+)
+
+def make_user_msg(intro: str, metaphor: str) -> str:
+    return USER_TEMPLATE.format(intro=intro.strip(), met=metaphor)
+
+# --------------------------------------------------------------------------
+# 3.  Helper: get one rating
+# --------------------------------------------------------------------------
+def rate_once(metaphor: str, intro: str, retries: int = 3) -> int | None:
+    for _ in range(retries):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL_NAME,
+                temperature=0,       # deterministic; raise if you want variability
+                max_tokens=60,
+                messages=[
+                    {"role": "system", "content": SYSTEM_MSG},
+                    {"role": "user",   "content": make_user_msg(intro, metaphor)},
+                ],
+            )
+            text = resp.choices[0].message.content.strip()
+            # extract leading digit 1–7
+            m = re.match(r".*?([1-7])", text)
+            if m:
+                return int(m.group(1))
+        except Exception as e:
+            print("⚠️ retrying after error:", e)
+            time.sleep(1)
+    return None
+
+# --------------------------------------------------------------------------
+# 4.  Load Excel sheet & collect averaged ratings + SD
+# --------------------------------------------------------------------------
+excel_path = r"C:\Users\Cagi\Desktop\LWfl\Stimuli\Pavia Learning Study - WordList.xlsx"
+df = pd.read_excel(excel_path, sheet_name="GPT", usecols=["INTRO", "MET"])
+
+means = []
+std_devs = []
+
+for idx, row in df.iterrows():
+    intro = row["INTRO"]
+    met   = row["MET"]
+    samples = []
+    for _ in range(N_ITER):
+        s = rate_once(met, intro)
+        if s is not None:
+            samples.append(s)
+        time.sleep(0.3)
+    if samples:
+        means.append(statistics.mean(samples))
+        std_devs.append(statistics.stdev(samples))
+    else:
+        means.append(None)
+        std_devs.append(None)
+    print(f"{idx+1:3d}. {met[:50]:50s} → mean={means[-1]:.2f}, sd={std_devs[-1]:.2f}")
+
+# --------------------------------------------------------------------------
+# 5.  Save results
+# --------------------------------------------------------------------------
+df["MEAN_RATING_P2"] = means
+df["SD_RATING_P2"]   = std_devs
+
+out_path = r"C:\Users\Cagi\Desktop\LWfl\Stimuli\PaviaLearning_final_specific_woutexamples.xlsx"
+df.to_excel(out_path, index=False)
+print(f"\nAll done! Ratings saved to:\n  {out_path}")
